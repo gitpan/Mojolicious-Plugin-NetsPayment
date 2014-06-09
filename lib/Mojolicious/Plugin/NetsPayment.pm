@@ -6,7 +6,7 @@ Mojolicious::Plugin::NetsPayment - Make payments using Nets
 
 =head1 VERSION
 
-0.02
+0.03
 
 =head1 DESCRIPTION
 
@@ -65,21 +65,20 @@ if you are using it.
     );
   };
 
-  app->start;
+=head2 Self contained
 
-=head1 ENVIRONMENT VARIABLES
+  use Mojolicious::Lite;
 
-=head2 MOJO_NETS_DEBUG
+  plugin NetsPayment => {
+    merchant_id => '...',
+    token => \ "dummy",
+  };
 
-Get extra debug output to STDERR.
+Setting token to a reference will enable this plugin to work without a working
+nets backend. This is done by replicating the behavior of Nets. This is
+especially useful when writing unit tests.
 
-=head2 MOJO_NETS_SELF_CONTAINED
-
-Set this environment variable to a true value and this module will try to
-replicate the behavior of Nets. This is especially useful when writing
-unit tests.
-
-To mimic Nets behavior, it will add these routes to your application:
+The following routes will be added to your application to mimic nets:
 
 =over 4
 
@@ -107,7 +106,7 @@ use Mojo::Base 'Mojolicious::Plugin';
 use Mojo::UserAgent;
 use constant DEBUG => $ENV{MOJO_NETS_DEBUG} || 0;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 =head1 ATTRIBUTES
 
@@ -564,9 +563,17 @@ Called when registering this plugin in the main L<Mojolicious> application.
 sub register {
   my ($self, $app, $config) = @_;
 
+  # self contained
+  if (ref $config->{token}) {
+    $self->_add_routes($app);
+    $self->_ua->server->app($app);
+    $config->{token} = ${ $config->{token} };
+  }
+
   # copy config to this object
-  $self->{$_} = $config->{$_} for grep { $self->$_ } keys %$config;
-  $self->_add_routes($app) if $ENV{MOJO_NETS_SELF_CONTAINED};
+  for (grep { $self->$_ } keys %$config) {
+    $self->{$_} = $config->{$_};
+  }
 
   $app->helper(
     nets => sub {
@@ -586,22 +593,18 @@ sub _add_routes {
 
   $self->base_url('/nets');
 
-  $r->get('/nets/Netaxept/Process.aspx')->to(cb => sub {
-    shift->render('nets/Netaxept/Process', format => 'aspx');
-  });
-  $r->get('/nets/Netaxept/Query.aspx')->to(cb => sub {
-    shift->render('nets/Netaxept/Query', format => 'aspx');
-  });
+  $r->get('/nets/Netaxept/Process.aspx', { template => 'nets/Netaxept/Process', format => 'xml' });
+  $r->get('/nets/Netaxept/Query.aspx', { template => 'nets/Netaxept/Query', format => 'xml' });
   $r->get('/nets/Netaxept/Register.aspx')->to(cb => sub {
     my $self = shift;
     my $txn_id = 'b127f98b77f741fca6bb49981ee6e846';
     $payments->{$txn_id} = $self->req->query_params->to_hash;
-    $self->render('nets/Netaxept/Register', txn_id => $txn_id, format => 'aspx');
+    $self->render('nets/Netaxept/Register', txn_id => $txn_id, format => 'xml');
   });
   $r->get('/nets/Terminal/default.aspx')->to(cb => sub {
     my $self = shift;
     my $txn_id = $self->param('transactionId') || 'missing';
-    $self->render('nets/Terminal/default', format => 'aspx', payment => $payments->{$txn_id});
+    $self->render('nets/Terminal/default', format => 'html', payment => $payments->{$txn_id});
   });
 
   push @{ $app->renderer->classes }, __PACKAGE__;
@@ -697,7 +700,7 @@ Jan Henning Thorsen - C<jhthorsen@cpan.org>
 1;
 
 __DATA__
-@@ layouts/nets.aspx.ep
+@@ layouts/nets.html.ep
 <!DOCTYPE html>
 <html>
 <head>
@@ -708,7 +711,7 @@ __DATA__
 </body>
 </html>
 
-@@ nets/Netaxept/Process.aspx.ep
+@@ nets/Netaxept/Process.xml.ep
 <?xml version="1.0" ?>
 <ProcessResponse xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Operation>AUTH</Operation>
@@ -719,7 +722,7 @@ __DATA__
   <MerchantId>9999997</MerchantId>
 </ProcessResponse>
 
-@@ nets/Netaxept/Query.aspx.ep
+@@ nets/Netaxept/Query.xml.ep
 <?xml version="1.0" ?>
 <PaymentInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <MerchantId>9999997</MerchantId>
@@ -779,13 +782,13 @@ __DATA__
   <AvtaleGiroInformation />
 </PaymentInfo>
 
-@@ nets/Netaxept/Register.aspx.ep
+@@ nets/Netaxept/Register.xml.ep
 <?xml version="1.0" ?>
 <RegisterResponse xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <TransactionId><%= $txn_id %></TransactionId>
 </RegisterResponse>
 
-@@ nets/Terminal/default.aspx.ep
+@@ nets/Terminal/default.html.ep
 % layout 'nets';
 <h1>Netaxept</h1>
 <p>This is a dummy terminal. Obviously.</p>
