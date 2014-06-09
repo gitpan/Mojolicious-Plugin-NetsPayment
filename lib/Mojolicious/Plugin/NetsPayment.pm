@@ -6,7 +6,7 @@ Mojolicious::Plugin::NetsPayment - Make payments using Nets
 
 =head1 VERSION
 
-0.01
+0.02
 
 =head1 DESCRIPTION
 
@@ -58,7 +58,7 @@ if you are using it.
       },
       sub {
         my ($delay, $res) = @_;
-        return $self->render(text => $res->error->{message}, status => $res->code) unless $res->code == 200;
+        return $self->render(text => $res->param("message"), status => $res->code) unless $res->code == 200;
         # store $res->param('transaction_id') and $res->param('authorization_id');
         $self->render(text => "yay!");
       },
@@ -79,21 +79,25 @@ Set this environment variable to a true value and this module will try to
 replicate the behavior of Nets. This is especially useful when writing
 unit tests.
 
-=head1 SEE ALSO
+To mimic Nets behavior, it will add these routes to your application:
 
 =over 4
 
-=item * Overview
+=item * /nets/Netaxept/Process.aspx
 
-L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/Overview/>
+L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/Process/>.
 
-=item * API
+=item * /nets/Netaxept/Query.aspx
 
-L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/>
+L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/Query/>.
 
-=item * Validation
+=item * /nets/Netaxept/Register.aspx
 
-L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/Validation/>
+L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/Register/>.
+
+=item * /nets/Terminal/default.aspx
+
+L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/Terminal/>.
 
 =back
 
@@ -103,7 +107,7 @@ use Mojo::Base 'Mojolicious::Plugin';
 use Mojo::UserAgent;
 use constant DEBUG => $ENV{MOJO_NETS_DEBUG} || 0;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 ATTRIBUTES
 
@@ -179,6 +183,42 @@ From L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API
   Available financial transactions are AUTH, SALE, CAPTURE, CREDIT
   and ANNUL.
 
+Useful C<$res> values:
+
+=over 4
+
+=item * $res->code
+
+Holds the response code from Nets. Will be set to 500 by this module, if the
+message could not be parsed.
+
+=item * $res->param("code")
+
+"OK" on success, something else on failure.
+
+=item * $res->param("authorization_id")
+
+Only set on success. An ID identifying this authorization.
+
+=item * $res->param("operation")
+
+Only set on success. This is the same value as given to this method.
+
+=item * $res->param("transaction_id")
+
+Only set on success. This is the same value as given to this method.
+
+=item * $res->param("message")
+
+Only set if "code" is not "OK". Holds a description of the error.
+See also L</ERROR HANDLING>.
+
+=item * $res->param("source")
+
+Only set if "code" is not "OK". See also L</ERROR HANDLING>.
+
+=back
+
 =cut
 
 sub process_payment {
@@ -208,31 +248,27 @@ sub process_payment {
 
       $res->code(0) unless $res->code;
 
+      local $@;
       eval {
         my $body = $res->dom->ProcessResponse;
         my $code = $body->ResponseCode->text;
 
-        $res->param(code => $code);
-
         if($code eq 'OK') {
-          $res->param(transaction_id => $body->TransactionId->text);
-          $res->param(authorization_id => $body->AuthorizationId->text);
           $res->code(200);
+          $res->param(authorization_id => $body->AuthorizationId->text);
+          $res->param(operation => $body->Operation->text);
+          $res->param(transaction_id => $body->TransactionId->text);
         }
         else {
+          $res->code(500) if $res->code == 200;
           $res->param(message => $body->ResponseText->text);
           $res->param(source => $body->ResponseSource->text);
-          $res->code(500) if $res->code == 200;
         }
-        1;
+
+        $res->param(code => $code);
       } or do {
         warn "[MOJO_NETS] ! $@" if DEBUG;
-        my $err = $res->error || {};
-        $res->code(500);
-        $res->error({
-          advice => $err->{advice} || 0,
-          message => $self->_extract_error($tx) || $err->{message} || 'Unknown error',
-        });
+        $self->_extract_error($tx, $@);
       };
 
       $self->$cb($res);
@@ -257,6 +293,92 @@ sub process_payment {
 From L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/Query/>:
 
   To check the status of a transaction at any time, you can use the Query-call.
+
+Useful C<$res> values:
+
+=over 4
+
+=item * $res->param("amount")
+
+Holds the "amount" given to L</register_payment>.
+
+=item * $res->param("amount_captured")
+
+The amount which has been captured on this transaction.
+This value is the "AmountCaptured" value devided by 100.
+
+=item * $res->param("amount_credited")
+
+The amount which has been credited on this transaction.
+This value is the "AmountCredited" value devided by 100.
+
+=item * $res->param("annulled")
+
+Whether or not this transaction has been annulled.
+Boolean true or false.
+
+=item * $res->param("authorized")
+
+Whether or not this transaction has been authorized.
+Boolean true or false.
+
+=item * $res->param("currency_code")
+
+The currency code, following ISO 4217. Typical examples include "NOK" and
+"USD". Often the same as L</currency_code>.
+
+=item * $res->param("order_description")
+
+Holds the "order_description" given to L</register_payment>.
+
+=item * $res->param("order_number")
+
+Holds the "order_number" given to L</register_payment>.
+
+=item * $res->param("authorization_id")
+
+Same as "authorization_id" from L</process_payment>.
+
+=item * $res->param("customer_address1")
+
+=item * $res->param("customer_address2")
+
+=item * $res->param("customer_country")
+
+=item * $res->param("customer_email")
+
+=item * $res->param("customer_first_name")
+
+=item * $res->param("customer_ip")
+
+=item * $res->param("customer_last_name")
+
+=item * $res->param("customer_number")
+
+=item * $res->param("customer_phone_number")
+
+=item * $res->param("customer_postcode")
+
+=item * $res->param("expiry_date")
+
+Which date the card expires on the format YYMM.
+
+=item * $res->param("issuer_country")
+
+Which country the card was issued, following ISO 3166.
+
+=item * $res->param("masked_pan")
+
+The personal account number used for this transaction, masked with asterisks.
+
+=item * $res->param("payment_method")
+
+Which payment method was used for this transaction. Examples: "Visa",
+"MasterCard", "AmericanExpress", ...
+
+=back
+
+See also L</ERROR HANDLING>.
 
 =cut
 
@@ -284,49 +406,38 @@ sub query_payment {
 
       $res->code(0) unless $res->code;
 
+      local $@;
       eval {
-        my $body = $res->dom->QueryResponse;
+        my $body = $res->dom->PaymentInfo;
 
-        $res->param(
-            amount          => $body->Amount->text / 100,
-            amount_captured => $body->AmountCaptured->text,
-            amount_credited => $body->AmountCredited->text,
-            annulled        => $body->Annulled->text,
-            authorized      => $body->Authorized->text,
-            currency_code   => $body->Currency->text,
-            fee             => $body->Fee->text / 100,
-            order_number    => $body->OrderNumber->text,
-            total           => $body->Total->text / 100,
+        $res->param(amount            => $body->OrderInformation->Amount->text / 100);
+        $res->param(amount_captured   => $body->Summary->AmountCaptured->text / 100);
+        $res->param(amount_credited   => $body->Summary->AmountCredited->text / 100);
+        $res->param(annuled           => $body->Summary->Annuled->text eq 'true' ? 1 : 0);
+        $res->param(authorized        => $body->Summary->Authorized->text eq 'true' ? 1 : 0);
+        $res->param(currency_code     => $body->OrderInformation->Currency->text);
+        $res->param(order_description => $body->OrderInformation->OrderDescription->text);
+        $res->param(order_number      => $body->OrderInformation->OrderNumber->text);
 
-            authorization_id      => eval { $body->AuthorizationId->text },
-            customer_address1     => eval { $body->Address1->text },
-            customer_address2     => eval { $body->Address2->text },
-            customer_country      => eval { $body->Country->text },
-            customer_email        => eval { $body->Email->text },
-            customer_first_name   => eval { $body->FirstName->text },
-            customer_ip           => eval { $body->IP->text },
-            customer_last_name    => eval { $body->LastName->text },
-            customer_number       => eval { $body->CustomerNumber->text },
-            customer_phone_number => eval { $body->PhoneNumber->text },
-            customer_postcode     => eval { $body->Postcode->text },
-            eci                   => eval { $body->ECI->text },
-            expiry_date           => eval { $body->ExpiryDate->text },
-            issuer_country        => eval { $body->IssuerCountry->text },
-            issuer_id             => eval { $body->IssuerId->text },
-            order_description     => eval { $body->OrderDescription->text },
-            pan                   => eval { $body->MaskedPan->text },
-            payment_method        => eval { $body->PaymentMethod->text },
-            status                => eval { $body->AuthenticatedStatus->text },
-        );
+        $res->param(authorization_id      => eval { $body->Summary->AuthorizationId->text });
+        $res->param(customer_address1     => eval { $body->CustomerInformation->Address1->text });
+        $res->param(customer_address2     => eval { $body->CustomerInformation->Address2->text });
+        $res->param(customer_country      => eval { $body->iCustomerInformation->Country->text });
+        $res->param(customer_email        => eval { $body->CustomerInformation->Email->text });
+        $res->param(customer_first_name   => eval { $body->CustomerInformation->FirstName->text });
+        $res->param(customer_ip           => eval { $body->CustomerInformation->IP->text });
+        $res->param(customer_last_name    => eval { $body->CustomerInformation->LastName->text });
+        $res->param(customer_number       => eval { $body->CustomerInformation->CustomerNumber->text });
+        $res->param(customer_phone_number => eval { $body->CustomerInformation->PhoneNumber->text });
+        $res->param(customer_postcode     => eval { $body->CustomerInformation->Postcode->text });
+        $res->param(expiry_date           => eval { $body->CardInformation->ExpiryDate->text });
+        $res->param(issuer_country        => eval { $body->CardInformation->IssuerCountry->text });
+        $res->param(masked_pan            => eval { $body->CardInformation->MaskedPAN->text });
+        $res->param(payment_method        => eval { $body->CardInformation->PaymentMethod->text });
         1;
       } or do {
         warn "[MOJO_NETS] ! $@" if DEBUG;
-        my $err = $res->error || {};
-        $res->code(500);
-        $res->error({
-          advice => $err->{advice} || 0,
-          message => $self->_extract_error($tx) || $err->{message} || 'Unknown error',
-        });
+        $self->_extract_error($tx, $@);
       };
 
       $self->$cb($res);
@@ -370,6 +481,26 @@ for a complete list. CamelCase arguments can be given in normal form. Examples:
   # currencyCode        | currency_code
   # customerPhoneNumber | customer_phone_number
 
+Useful C<$res> values:
+
+=over 4
+
+=item * $res->code
+
+Set to 302 on success.
+
+=item * $res->param("transaction_id")
+
+Only set on success. An ID identifying this transaction. Generated by Nets.
+
+=item * $res->headers->location
+
+Only set on success. This holds a URL to the Nets terminal page, which
+you will redirect the user to after storing the transaction ID and other
+customer related details.
+
+=back
+
 =cut
 
 sub register_payment {
@@ -401,6 +532,7 @@ sub register_payment {
 
       $res->code(0) unless $res->code;
 
+      local $@;
       eval {
         my $id = $res->dom->RegisterResponse->TransactionId->text;
         my $terminal_url = $self->_url('/Terminal/default.aspx')->query({merchantId => $self->merchant_id, transactionId => $id});
@@ -411,12 +543,7 @@ sub register_payment {
         1;
       } or do {
         warn "[MOJO_NETS] ! $@" if DEBUG;
-        my $err = $res->error || {};
-        $res->code(500);
-        $res->error({
-          advice => $err->{advice} || 0,
-          message => $self->_extract_error($tx) || $err->{message} || 'Unknown error',
-        });
+        $self->_extract_error($tx, $@);
       };
 
       $self->$cb($res);
@@ -455,22 +582,26 @@ sub register {
 sub _add_routes {
   my ($self, $app) = @_;
   my $r = $app->routes;
-  my %txn2url;
+  my $payments = $self->{payments} ||= {}; # just here for debug purposes, may change without warning
 
-  $self->base_url($ENV{MOJO_NETS_SELF_CONTAINED} =~ /^http/ ? $ENV{MOJO_NETS_SELF_CONTAINED} : '');
+  $self->base_url('/nets');
 
-  $r->get('/Netaxept/Process.aspx')->to(cb => sub { shift->render('netspayment/process'); }, format => 'aspx');
-  $r->get('/Netaxept/Query.aspx')->to(cb => sub { shift->render('netspayment/query'); }, format => 'aspx');
-  $r->get('/Netaxept/Register.aspx')->to(cb => sub {
+  $r->get('/nets/Netaxept/Process.aspx')->to(cb => sub {
+    shift->render('nets/Netaxept/Process', format => 'aspx');
+  });
+  $r->get('/nets/Netaxept/Query.aspx')->to(cb => sub {
+    shift->render('nets/Netaxept/Query', format => 'aspx');
+  });
+  $r->get('/nets/Netaxept/Register.aspx')->to(cb => sub {
     my $self = shift;
     my $txn_id = 'b127f98b77f741fca6bb49981ee6e846';
-    $txn2url{$txn_id} = $self->param('redirectUrl') || 'missing';
-    $self->render('netspayment/register', txn_id => $txn_id, format => 'aspx');
+    $payments->{$txn_id} = $self->req->query_params->to_hash;
+    $self->render('nets/Netaxept/Register', txn_id => $txn_id, format => 'aspx');
   });
-  $r->get('/Terminal/default.aspx')->to(cb => sub {
+  $r->get('/nets/Terminal/default.aspx')->to(cb => sub {
     my $self = shift;
     my $txn_id = $self->param('transactionId') || 'missing';
-    $self->render('netspayment/terminal', format => 'aspx', redirect_url => $txn2url{$txn_id});
+    $self->render('nets/Terminal/default', format => 'aspx', payment => $payments->{$txn_id});
   });
 
   push @{ $app->renderer->classes }, __PACKAGE__;
@@ -484,13 +615,24 @@ sub _camelize {
 sub _error {
   my ($self, $err) = @_;
   my $res = Mojo::Message::Response->new;
-  return $res->error({ message => $err, advice => 400 })->code(400);
+  $res->code(400);
+  $res->param(message => $err);
+  $res->param(source => __PACKAGE__);
+  $res;
 }
 
 sub _extract_error {
-  my ($self, $tx) = @_;
+  my ($self, $tx, $e) = @_;
+  my $res = $tx->res;
+  my $err;
+
   local $@;
-  eval { $_[0]->res->dom->Exception->Error->Message->text };
+  $err = eval { $_[0]->res->dom->Exception->Error->Message->text };
+
+  $res->code(500);
+  $res->param(code => '') unless $res->param('code');
+  $res->param(message => $err // $e);
+  $res->param(source => $err ? $self->base_url : __PACKAGE__);
 }
 
 sub _url {
@@ -498,6 +640,46 @@ sub _url {
   warn "[MOJO_NETS] URL $url\n" if DEBUG;
   $url;
 }
+
+=head1 ERROR HANDLING
+
+There are some generic error handling in this module: The C<$res> object
+passed on to the callbacks will have "source" and "message" set. These can
+be retrived using the code below:
+
+  $int = $res->code; # will be 500 on exception
+  $str = $res->param("source");
+  $str = $res->param("message");
+
+The "source" might have to special values:
+
+=over 4
+
+=item * Same as L</base_url>.
+
+If the "source" is set to the value of L</base_url> then the "message"
+will contain an exception from Nets.
+
+=item * "Mojolicious::Plugin::NetsPayment"
+
+If the "source" is set to this package name, then the "message" will be an
+exception from parse error.
+
+=back
+
+=head1 SEE ALSO
+
+=over 4
+
+=item * Overview
+
+L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/Overview/>
+
+=item * API
+
+L<http://www.betalingsterminal.no/Netthandel-forside/Teknisk-veiledning/API/>
+
+=back
 
 =head1 COPYRIGHT AND LICENSE
 
@@ -515,7 +697,8 @@ Jan Henning Thorsen - C<jhthorsen@cpan.org>
 1;
 
 __DATA__
-@@ layouts/netspayment_xml.aspx.ep
+@@ layouts/nets.aspx.ep
+<!DOCTYPE html>
 <html>
 <head>
   <title>Nets terminal</title>
@@ -525,12 +708,8 @@ __DATA__
 </body>
 </html>
 
-@@ layouts/netspayment_xml.aspx.ep
+@@ nets/Netaxept/Process.aspx.ep
 <?xml version="1.0" ?>
-%= content
-
-@@ netspayment/process.aspx.ep
-% layout 'netspayment_xml';
 <ProcessResponse xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Operation>AUTH</Operation>
   <ResponseCode>OK</ResponseCode>
@@ -540,16 +719,81 @@ __DATA__
   <MerchantId>9999997</MerchantId>
 </ProcessResponse>
 
-@@ netspayment/query.aspx.ep
-% layout 'netspayment_xml';
+@@ nets/Netaxept/Query.aspx.ep
+<?xml version="1.0" ?>
+<PaymentInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <MerchantId>9999997</MerchantId>
+  <TransactionId>b127f98b77f741fca6bb49981ee6e846</TransactionId>
+  <QueryFinished>2009-12-16T15:18:30.445625+01:00</QueryFinished>
+  <OrderInformation>
+    <Amount>200</Amount>
+    <Currency>NOK</Currency>
+    <OrderNumber>10011</OrderNumber>
+    <OrderDescription></OrderDescription>
+  </OrderInformation>
+  <CustomerInformation>
+    <Email>jhthorsen@cpan.org</Email>
+    <IP>91.102.26.94</IP>
+    <PhoneNumber></PhoneNumber>
+    <FirstName>Jan Henning</FirstName>
+    <LastName>Thorsen</LastName>
+    <CustomerNumber></CustomerNumber>
+  </CustomerInformation>
+  <Summary>
+    <AmountCaptured>200</AmountCaptured>
+    <AmountCredited>0</AmountCredited>
+    <Annuled>false</Annuled>
+    <Authorized>true</Authorized>
+    <AuthorizationId>064392</AuthorizationId>
+  </Summary>
+  <CardInformation>
+    <IssuerCountry>NO</IssuerCountry>
+    <MaskedPAN>492500******0004</MaskedPAN>
+    <PaymentMethod>Visa</PaymentMethod>
+    <ExpiryDate>1212</ExpiryDate>
+  </CardInformation>
+  <History>
+    <TransactionLogLine>
+      <DateTime>2009-12-16T10:26:47.243</DateTime>
+      <Description />
+      <Operation>Register</Operation>
+      <TransactionReconRef />
+    </TransactionLogLine>
+    <TransactionLogLine>
+      <DateTime>2009-12-16T11:17:54.633</DateTime>
+      <Operation>Auth</Operation>
+      <BatchNumber>555</BatchNumber>
+      <TransactionReconRef />
+    </TransactionLogLine>
+    <TransactionLogLine>
+      <Amount>200</Amount>
+      <DateTime>2009-12-16T11:40:57.603</DateTime>
+      <Description />
+      <Operation>Capture</Operation>
+      <BatchNumber>555</BatchNumber>
+      <TransactionReconRef />
+    </TransactionLogLine>
+  </History>
+  <ErrorLog />
+  <AuthenticationInformation />
+  <AvtaleGiroInformation />
+</PaymentInfo>
 
-@@ netspayment/register.aspx.ep
-% layout 'netspayment_xml';
+@@ nets/Netaxept/Register.aspx.ep
+<?xml version="1.0" ?>
 <RegisterResponse xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <TransactionId><%= $txn_id %></TransactionId>
 </RegisterResponse>
 
-@@ netspayment/terminal.aspx.ep
-% layout 'netspayment';
-%= join '|', $self->param;
-%= link_to 'Complete payment', url_for($redirect_url)->query({ transactionId => param('transactionId'), responseCode => 'OK' }), class => 'back'
+@@ nets/Terminal/default.aspx.ep
+% layout 'nets';
+<h1>Netaxept</h1>
+<p>This is a dummy terminal. Obviously.</p>
+<dl>
+  <dt>Merchant</dt><dd><%= $payment->{merchantId} %></dd>
+  <dt>Amount</dt><dd><%= sprintf '%.02f', $payment->{amount} / 100 %> <%= $payment->{currencyCode} %></dd>
+  <dt>Order number</dt><dd><%= $payment->{orderNumber} %></dd>
+</dl>
+<p>
+  %= link_to 'Complete payment', url_for($payment->{redirectUrl})->query({ transactionId => param('transactionId'), responseCode => 'OK' }), class => 'back'
+</p>
