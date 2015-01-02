@@ -3,12 +3,12 @@ abstract: 'Make payments using Nets'
 author:
   - 'Jan Henning Thorsen <jhthorsen@cpan.org>'
 build_requires:
-  Test::More: 0.90
+  Test::More: 0.88
 configure_requires:
   ExtUtils::MakeMaker: 0
 dynamic_config: 1
 generated_by: 'ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.120921'
-license: perl
+license: artistic_2
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
   version: 1.4
@@ -18,10 +18,10 @@ no_index:
     - t
     - inc
 requires:
-  Mojolicious: 5.00
+  IO::Socket::SSL: 1.75
+  Mojolicious: 5.48
 resources:
   bugtracker: https://github.com/jhthorsen/mojolicious-plugin-netspayment/issues
-  homepage: https://metacpan.org/release/Mojolicious-Plugin-NetsPayment
-  license: http://dev.perl.org/licenses/
+  homepage: https://github.com/jhthorsen/mojolicious-plugin-netspayment
   repository: https://github.com/jhthorsen/mojolicious-plugin-netspayment.git
-version: 0.03
+version: 0.04
